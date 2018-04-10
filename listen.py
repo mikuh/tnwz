@@ -1,19 +1,23 @@
-import re
+import os
 import json
 from mitmproxy import ctx
 from urllib.parse import quote
 import string
 import requests
-import csv
+import sqlite3
+import hashlib
+
+conn = sqlite3.connect('qa.db')
+cursor = conn.cursor()
+
+# xy = ['538 1043', '560 1229', '540 1430', '543 1616']
 
 neg_words = ['不包括', '哪个不是', '不属于', '哪一位不是', '不相等', '无法直接', '不能听到', '不需要', '不是以']
 
 questions_map = {}
-with open("questiuon_options_answer.csv", 'r', encoding="utf-8") as f:
-    f_csv_read = csv.reader(f)
-    for line in f_csv_read:
-        if len(line) == 3:
-            questions_map[line[0]] = line[2]
+cursor.execute('select question, answer from qa')
+for row in cursor.fetchall():
+    questions_map[row[0]] = row[1]
 
 
 def response(flow):
@@ -27,10 +31,10 @@ def response(flow):
         data['data']['options'] = options
         flow.response.text = json.dumps(data)
 
-
 def ask(question, options):
+
     if question in questions_map:
-        options[options.index(questions_map[question])] += " √True"
+        options[options.index(questions_map[question].strip())] += "【True】"
         return options
     url = quote('https://www.baidu.com/s?wd=' + question, safe=string.printable)
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36"}
@@ -42,15 +46,18 @@ def ask(question, options):
         counts.append(count)
     max_index = counts.index(max(counts))
     min_index = counts.index(min(counts))
-    if any(word in question for word in neg_words):
-        with open("questiuon_options_answer.csv", 'a', encoding='utf-8', newline='') as f:
-            f_csv = csv.writer(f)
-            f_csv.writerow([question, options, options[min_index]])
-        options[min_index] += " √True"
-    else:
-        with open("questiuon_options_answer.csv", 'a', encoding='utf-8', newline='') as f:
-            f_csv = csv.writer(f)
-            f_csv.writerow([question, options, options[max_index]])
-        options[max_index] += " √True"
+    flag = any(word in question for word in neg_words)
+
+    try:
+        hash_question = hashlib.sha1(question.encode('utf-8')).hexdigest()
+        cursor.execute("INSERT INTO qa (hash_question, question, options, answer) VALUES (?, ?, ?, ? )",
+                       (hash_question, question, str(options), options[min_index] if flag else options[max_index]))
+        conn.commit()
+        if flag:
+            options[min_index] += "【True】"
+        else:
+            options[max_index] += "【True】"
+    except Exception as e:
+        print(e)
     return options
 
